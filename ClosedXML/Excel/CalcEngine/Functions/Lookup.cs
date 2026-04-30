@@ -22,10 +22,10 @@ namespace ClosedXML.Excel.CalcEngine.Functions
             //ce.RegisterFunction("GETPIVOTDATA", , Getpivotdata); // Returns data stored in a PivotTable report
             ce.RegisterFunction("HLOOKUP", 3, 4, AdaptLastOptional(Hlookup, true), FunctionFlags.Range, AllowRange.Only, 1); // Looks in the top row of an array and returns the value of the indicated cell
             ce.RegisterFunction("HYPERLINK", 1, 2, Adapt(Hyperlink), FunctionFlags.Scalar | FunctionFlags.SideEffect); // Creates a shortcut or jump that opens a document stored on a network server, an intranet, or the Internet
-            ce.RegisterFunction("INDEX", 2, 4, Index, AllowRange.Only, 0, 1); // Uses an index to choose a value from a reference or array
+            ce.RegisterFunction("INDEX", 2, 4, AdaptIndex(Index), FunctionFlags.Range | FunctionFlags.ReturnsArray, AllowRange.Only, 0); // Uses an index to choose a value from a reference or array
             //ce.RegisterFunction("INDIRECT", , Indirect); // Returns a reference indicated by a text value
             //ce.RegisterFunction("LOOKUP", , Lookup); // Looks up values in a vector or array
-            ce.RegisterFunction("MATCH", 2, 3, Match, AllowRange.Only, 1); // Looks up values in a reference or array
+            ce.RegisterFunction("MATCH", 2, 3, AdaptMatch(Match), FunctionFlags.Range, AllowRange.Only, 1); // Looks up values in a reference or array
             //ce.RegisterFunction("OFFSET", , Offset); // Returns a reference offset from a given reference
             ce.RegisterFunction("ROW", 0, 1, Row, FunctionFlags.Range | FunctionFlags.ReturnsArray, AllowRange.All); // Returns the row number of a reference
             ce.RegisterFunction("ROWS", 1, 1, Adapt(Rows), FunctionFlags.Range, AllowRange.All); // Returns the number of rows in a reference
@@ -120,131 +120,260 @@ namespace ClosedXML.Excel.CalcEngine.Functions
             return friendlyName?.ToAnyValue() ?? linkLocation;
         }
 
-        private static object Index(List<Expression> p)
+        public static AnyValue Index(CalcContext ctx, AnyValue value, List<int> p)
         {
-            // This is one of the few functions that is "overloaded"
-            if (!CalcEngineHelpers.TryExtractRange(p[0], out var range, out var error))
-                return error;
+            var areaNumber = p.Count > 2 ? p[2] : 1;
+            if (areaNumber < 1)
+                return XLError.IncompatibleValue;
 
-            if (range.ColumnCount() > 1 && range.RowCount() > 1)
+            if (!value.IsReference && areaNumber > 1)
+                return XLError.CellReference;
+
+            // There must be two paths, one for array and one for reference. Reference path
+            // must return reference, so it behaves correctly with implicit intersection.
+            OneOf<XLRangeAddress, Array> data;
+            if (value.TryPickScalar(out var scalar, out var collection))
             {
-                var row_num = (int)p[1];
-                var column_num = (int)p[2];
+                if (scalar.IsBlank)
+                    return XLError.IncompatibleValue;
 
-                if (row_num > range.RowCount())
-                    return XLError.CellReference;
-
-                if (column_num > range.ColumnCount())
-                    return XLError.CellReference;
-
-                return range.Row(row_num).Cell(column_num).Value;
+                data = new ScalarArray(scalar, 1, 1);
             }
-            else if (p.Count == 2)
+            else if (collection.TryPickT0(out var valueArray, out var reference))
             {
-                var cellOffset = (int)p[1];
-                if (cellOffset > range.RowCount() * range.ColumnCount())
-                    return XLError.CellReference;
-
-                return range.Cells().ElementAt(cellOffset - 1).Value;
+                data = valueArray;
             }
             else
             {
-                int column_num = 1;
-                int row_num = 1;
-
-                if (!(p[1] is EmptyValueExpression))
-                    row_num = (int)p[1];
-
-                if (!(p[2] is EmptyValueExpression))
-                    column_num = (int)p[2];
-
-                var rangeIsRow = range.RowCount() == 1;
-                if (rangeIsRow && row_num > 1)
+                if (areaNumber > reference.Areas.Count)
                     return XLError.CellReference;
 
-                if (!rangeIsRow && column_num > 1)
-                    return XLError.CellReference;
+                data = reference.Areas[areaNumber - 1];
+            }
 
-                if (row_num > range.RowCount())
-                    return XLError.CellReference;
+            var width = data.Match(static area => area.ColumnSpan, static array => array.Width);
+            var height = data.Match(static area => area.RowSpan, static array => array.Height);
 
-                if (column_num > range.ColumnCount())
-                    return XLError.CellReference;
+            var rowNumber = 0;
+            var colNumber = 0;
+            if (p.Count == 1)
+            {
+                if (width == 1)
+                    rowNumber = p[0];
 
-                return range.Row(row_num).Cell(column_num).Value;
+                if (height == 1)
+                    colNumber = p[0];
+            }
+
+            if (p.Count >= 2)
+            {
+                rowNumber = p[0];
+                colNumber = p[1];
+            }
+
+            // Check the bounded values
+            if (rowNumber < 0 || colNumber < 0)
+                return XLError.IncompatibleValue;
+
+            if (rowNumber > height || colNumber > width)
+                return XLError.CellReference;
+
+            return data.TryPickT0(out var area, out var array)
+                ? IndexArea(area, rowNumber, colNumber)
+                : IndexArray(array, rowNumber, colNumber);
+
+            static Reference IndexArea(XLRangeAddress area, int rowNumber, int colNumber)
+            {
+                // Return whole area
+                if (rowNumber == 0 && colNumber == 0)
+                    return new Reference(area);
+
+                // Return one column at colNumber
+                if (rowNumber == 0)
+                {
+                    var topCell = new XLAddress(area.Worksheet, area.FirstAddress.RowNumber, area.FirstAddress.ColumnNumber + colNumber - 1, true, true);
+                    var bottomCell = new XLAddress(area.Worksheet, area.LastAddress.RowNumber, area.FirstAddress.ColumnNumber + colNumber - 1, true, true);
+                    return new Reference(new XLRangeAddress(topCell, bottomCell));
+                }
+
+                // Return one row at rowNumber
+                if (colNumber == 0)
+                {
+                    var leftCell = new XLAddress(area.Worksheet, area.FirstAddress.RowNumber + rowNumber - 1, area.FirstAddress.ColumnNumber, true, true);
+                    var rightCell = new XLAddress(area.Worksheet, area.FirstAddress.RowNumber + rowNumber - 1, area.LastAddress.ColumnNumber, true, true);
+                    return new Reference(new XLRangeAddress(leftCell, rightCell));
+                }
+
+                // Return single cell reference.
+                var areaCorner = area.FirstAddress;
+                var cellAddress = new XLAddress(area.Worksheet, areaCorner.RowNumber + rowNumber - 1, areaCorner.ColumnNumber + colNumber - 1, true, true);
+                return new Reference(new XLRangeAddress(cellAddress, cellAddress));
+            }
+
+            static AnyValue IndexArray(Array array, int rowNumber, int colNumber)
+            {
+                // Return whole array
+                if (rowNumber == 0 && colNumber == 0)
+                    return array;
+
+                // Return one column at colNumber
+                if (rowNumber == 0)
+                    return new SlicedArray(array, 0, array.Height, colNumber - 1, 1);
+
+                // Return one row at rowNumber
+                if (colNumber == 0)
+                    return new SlicedArray(array, rowNumber - 1, 1, 0, array.Width);
+
+                // Return single value
+                return array[rowNumber - 1, colNumber - 1].ToAnyValue();
             }
         }
 
-        private static object Match(List<Expression> p)
+        private static ScalarValue Match(CalcContext ctx, ScalarValue target, AnyValue lookupArray, int matchType)
         {
-            var lookup_value = p[0];
-
-            if (!CalcEngineHelpers.TryExtractRange(p[1], out var range, out var error))
-                return error;
-
-            int match_type = 1;
-            if (p.Count > 2)
-                match_type = Math.Sign((int)p[2]);
-
-            if (range.ColumnCount() != 1 && range.RowCount() != 1)
-                return XLError.IncompatibleValue;
-
-            Predicate<int> lookupPredicate = null;
-            switch (match_type)
-            {
-                case 0:
-                    lookupPredicate = i => i == 0;
-                    break;
-
-                case 1:
-                    lookupPredicate = i => i <= 0;
-                    break;
-
-                case -1:
-                    lookupPredicate = i => i >= 0;
-                    break;
-
-                default:
-                    return XLError.NoValueAvailable;
-            }
-
-            IXLCell foundCell = null;
-
-            if (match_type == 0)
-                foundCell = range
-                    .CellsUsed(XLCellsUsedOptions.Contents, c => lookupPredicate.Invoke(new Expression(c.Value).CompareTo(lookup_value)))
-                    .FirstOrDefault();
-            else
-            {
-                var isFirst = true;
-                XLCellValue previousValue = Blank.Value;
-                foundCell = range
-                    .CellsUsed(XLCellsUsedOptions.Contents)
-                    .TakeWhile(c =>
-                    {
-                        var currentCellExpression = new Expression(c.Value);
-                        if (!isFirst)
-                        {
-                            // When match_type != 0, we have to assume that the order of the items being search is ascending or descending
-                            var previousValueExpression = new Expression(previousValue);
-                            if (!lookupPredicate.Invoke(previousValueExpression.CompareTo(currentCellExpression)))
-                                return false;
-                        }
-
-                        isFirst = false;
-                        previousValue = c.Value;
-
-                        return lookupPredicate.Invoke(currentCellExpression.CompareTo(lookup_value));
-                    })
-                    .LastOrDefault();
-            }
-
-            if (foundCell == null)
+            if (target.IsBlank)
                 return XLError.NoValueAvailable;
 
-            var firstCell = range.FirstCell();
+            if (target.TryPickError(out var error))
+                return error;
 
-            return (foundCell.Address.ColumnNumber - firstCell.Address.ColumnNumber + 1) * (foundCell.Address.RowNumber - firstCell.Address.RowNumber + 1);
+            if (!lookupArray.TryPickCollectionArray(out var array, ctx))
+                return XLError.NoValueAvailable;
+
+            // Match only supports arrays with one row or one column.
+            // Normalize to an array with one column in both cases.
+            if (array.Height == 1 && array.Width > 1)
+                array = new TransposedArray(array);
+
+            if (array.Width != 1)
+                return XLError.NoValueAvailable;
+
+            var index = matchType switch
+            {
+                < 0 => MatchDescending(target, array, ScalarValueComparer.SortIgnoreCase),
+                0 => MatchUnsorted(target, array, ctx),
+                > 0 => MatchAscending(target, array, ScalarValueComparer.SortIgnoreCase),
+            };
+
+            if (index < 0)
+                return XLError.NoValueAvailable;
+
+            return index + 1;
+
+            static int MatchAscending(ScalarValue target, Array data, IComparer<ScalarValue> comparer)
+            {
+                var index = Bisection(target, data, comparer);
+                if (index == -1)
+                    return index;
+
+                // When there are multiple same elements, return position of the last one
+                while (index < data.Height - 1 && comparer.Compare(data[index + 1, 0], data[index, 0]) == 0)
+                    index++;
+
+                return index;
+            }
+
+            static int MatchUnsorted(ScalarValue target, Array data, CalcContext ctx)
+            {
+                var criteria = Criteria.Create(target, ctx.Culture);
+                for (var i = 0; i < data.Height; ++i)
+                {
+                    var value = data[i, 0];
+                    if (target.HaveSameType(value) && criteria.Match(value))
+                        return i;
+                }
+
+                return -1;
+            }
+
+            static int MatchDescending(ScalarValue target, Array data, IComparer<ScalarValue> comparer)
+            {
+                // Data should be in ascending order, but Excel doesn't use bisection.
+                var found = -1;
+                for (var i = 0; i < data.Height; ++i)
+                {
+                    // Skip elements with different type
+                    var value = data[i, 0];
+                    while (!value.HaveSameType(target))
+                    {
+                        if (i == data.Height - 1)
+                            return found;
+
+                        value = data[++i, 0];
+                    }
+
+                    var compare = comparer.Compare(target, value);
+                    if (compare == 0)
+                        return i;
+
+                    if (compare > 0) // target > value
+                        return found;
+
+                    // value > target, so there might an exact match later
+                    found = i;
+                }
+
+                return found;
+            }
+        }
+
+        /// <summary>
+        /// Find index of the greatest element smaller or equal to the <paramref name="target"/>.
+        /// </summary>
+        /// <param name="target">Value to look for.</param>
+        /// <param name="data">Data in ascending order.</param>
+        /// <param name="comparer">A comparator for comparing two values.</param>
+        /// <returns>Index of found element. If the <paramref name="data"/> contains
+        ///   a sequence of <paramref name="target"/> values, it can be index of any of them.
+        /// </returns>
+        private static int Bisection(ScalarValue target, Array data, IComparer<ScalarValue> comparer)
+        {
+            // This should match Excel logic perfectly. Make sure to do some fuzzy testing when changing the code.
+            var low = 0;
+            var high = data.Height - 1;
+            while (low < high)
+            {
+                var (middle, compare) = FindMiddleAbove(low, high, target, data, comparer);
+
+                if (compare == 0)
+                    return middle;
+
+                // target < value
+                if (compare < 0)
+                    high = Math.Max(low, middle - 1);
+
+                // target > value
+                if (compare > 0)
+                    low = Math.Min(high, middle + 1);
+            }
+
+            // Final index might point to an element greater than the lookup
+            // (e.g. { 1, 2 } with lookup 1.5). The data should be ascending,
+            // so just go in the expected order.
+            for (var i = low; i >= 0; --i)
+            {
+                var compare = comparer.Compare(data[i, 0], target);
+                if (compare <= 0) // data[i] <= target
+                    return i;
+            }
+
+            return -1;
+
+            static (int Middle, int Comparison) FindMiddleAbove(int low, int high, ScalarValue target, Array data, IComparer<ScalarValue> comparer)
+            {
+                var initial = (low + high) / 2;
+                var middle = initial;
+                while (middle <= high)
+                {
+                    if (data[middle, 0].HaveSameType(target))
+                        return (middle, comparer.Compare(target, data[middle, 0]));
+
+                    middle++;
+                }
+
+                // There is nothing left in the higher half. Target must be in the lower half.
+                return (initial, -1);
+            }
         }
 
         private static AnyValue Row(CalcContext ctx, Span<AnyValue> p)

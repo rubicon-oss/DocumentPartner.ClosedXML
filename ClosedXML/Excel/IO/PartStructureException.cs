@@ -36,14 +36,34 @@ namespace ClosedXML.Excel.IO
             return new PartStructureException("XML doesn't contain a required attribute.");
         }
 
+        internal static Exception MissingAttribute(string attributeName)
+        {
+            return new PartStructureException($"XML doesn't contain a required attribute '{attributeName}'.");
+        }
+
         internal static Exception IncorrectAttributeFormat()
         {
             return new PartStructureException("The attribute has a value in an incorrect format.");
         }
 
+        public static Exception IncorrectElementFormat(string elementName)
+        {
+            return new PartStructureException($"The element '{elementName}' doesn't have or misses child elements/attributes that are required by constrains of the workbook.");
+        }
+
         internal static Exception IncorrectAttributeValue()
         {
             return new PartStructureException("The value of attribute doesn't make sense with the rest of data of a workbook (e.g. reference that doesn't exist).");
+        }
+
+        internal static Exception InvalidAttributeValue(string attributeValue)
+        {
+            return new PartStructureException($"The value of attribute '{attributeValue}' is not valid value for the attribute.");
+        }
+
+        public static Exception RequiredElementIsMissing()
+        {
+            return new PartStructureException($"The XML schema requires an element, but is is not present.");
         }
     }
 }

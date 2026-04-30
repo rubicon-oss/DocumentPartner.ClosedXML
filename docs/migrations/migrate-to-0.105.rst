@@ -43,3 +43,20 @@ The setters ```IXLCell.FormulaA1```, ```IXLCell.FormulaR1C1``` and
 ```=``` sign (i.e. ``` = A1+B4 ``` will turn into ```A1+B4```). A formula
 starting with an equals sign is not a valid formula per formula grammar and
 causes problems with parsing.
+
+*********
+Functions
+*********
+
+`CHAR` now uses win1252 to interpret passed values (values were previously
+interpreted as unicode codepoints).
+
+`DOLLAR` now uses culture of a workbook, not ambient culture from
+`CultureInfo.CurrentCulture`. Reminder: `XLWorkbook.EvaluateExpr` uses
+invariant culture, not ambient culture.
+
+The formula setters (```IXLCell.FormulaA1```, ```IXLCell.FormulaR1C1```,
+```IXLRangeBase.FormulaA1```, ```IXLRangeBase.FormulaR1C1```,
+```IXLRangeBase.ArrayFormulaA1```) now automatically add prefix for future
+functions (e.g. ```CONCAT``` is turned to ```_xlfn.CONCAT```). The Excel
+requires use of prefixed name in formulas, though they are hidden from users.
