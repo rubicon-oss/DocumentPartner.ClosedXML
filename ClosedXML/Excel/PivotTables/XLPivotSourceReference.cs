@@ -1,29 +1,33 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace ClosedXML.Excel
 {
     /// <summary>
-    /// A reference to the pivot source. The source might exist or not, that
-    /// is evaluated during pivot cache record refresh.
+    /// A reference to the source data of <see cref="XLPivotCache"/>. The source might exist
+    /// or not, that is evaluated during pivot cache record refresh.
     /// </summary>
-    internal sealed class XLPivotSourceReference : IEquatable<XLPivotSourceReference>
+    internal sealed class XLPivotSourceReference : IXLPivotSource
     {
         internal XLPivotSourceReference(XLBookArea area)
         {
             Area = area;
             Name = null;
-            SourceType = XLPivotTableSourceType.Area;
         }
 
         internal XLPivotSourceReference(string namedRangeOrTable)
         {
             Area = null;
             Name = namedRangeOrTable;
-            SourceType = XLPivotTableSourceType.Named;
         }
 
-        internal XLPivotTableSourceType SourceType { get; }
+        /// <summary>
+        /// Are source data in external workbook defined by a <see cref="Name"/> or by <see cref="Area">cell area</see>.
+        /// </summary>
+        [MemberNotNullWhen(true, nameof(Name))]
+        [MemberNotNullWhen(false, nameof(Area))]
+        internal bool UsesName => Name is not null;
 
         /// <summary>
         /// Book area with the source data. Either this or <see cref="Name"/> is set.
@@ -36,8 +40,12 @@ namespace ClosedXML.Excel
         /// </summary>
         internal string? Name { get; }
 
-        public bool Equals(XLPivotSourceReference other)
+        public bool Equals(IXLPivotSource otherSource)
         {
+            var other = otherSource as XLPivotSourceReference;
+            if (other is null)
+                return false;
+
             if (ReferenceEquals(this, other))
                 return true;
 
@@ -46,7 +54,7 @@ namespace ClosedXML.Excel
 
         public override bool Equals(object? obj)
         {
-            return obj is XLPivotSourceReference other && Equals(other);
+            return obj is IXLPivotSource other && Equals(other);
         }
 
         public override int GetHashCode()
@@ -61,7 +69,7 @@ namespace ClosedXML.Excel
         /// Try to determine actual area of the source reference in the
         /// workbook. Source reference might not be valid in the workbook.
         /// </summary>
-        internal bool TryGetSource(XLWorkbook workbook, out XLWorksheet? sheet, out XLSheetRange? sheetArea)
+        public bool TryGetSource(XLWorkbook workbook, out XLWorksheet? sheet, out XLSheetRange? sheetArea)
         {
             if (Name is not null)
             {

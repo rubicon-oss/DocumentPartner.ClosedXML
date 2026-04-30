@@ -1,9 +1,9 @@
-﻿#nullable disable
-
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using ClosedXML.Extensions;
 using ClosedXML.Utils;
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
 
@@ -15,81 +15,200 @@ namespace ClosedXML.Excel.IO
         {
             foreach (var pivotTableCacheDefinitionPart in workbookPart.GetPartsOfType<PivotTableCacheDefinitionPart>())
             {
-                if (pivotTableCacheDefinitionPart?.PivotCacheDefinition?.CacheSource?.WorksheetSource != null)
+                var cacheDefinition = pivotTableCacheDefinitionPart.PivotCacheDefinition;
+                if (cacheDefinition.CacheSource is not { } cacheSource)
+                    throw PartStructureException.RequiredElementIsMissing();
+
+                var pivotSourceReference = ParsePivotSourceReference(cacheSource);
+                var pivotCache = workbook.PivotCachesInternal.Add(pivotSourceReference);
+
+                // If WorkbookCacheRelId already has a value, it means the pivot source is being reused
+                if (string.IsNullOrWhiteSpace(pivotCache.WorkbookCacheRelId))
                 {
-                    var pivotSourceReference = ParsePivotSourceReference(pivotTableCacheDefinitionPart);
-                    if (pivotSourceReference == null)
-                        // We don't support external sources
-                        continue;
+                    pivotCache.WorkbookCacheRelId = workbookPart.GetIdOfPart(pivotTableCacheDefinitionPart);
+                }
 
-                    var pivotCache = workbook.PivotCachesInternal.Add(pivotSourceReference);
-
-                    // If WorkbookCacheRelId already has a value, it means the pivot source is being reused
-                    if (string.IsNullOrWhiteSpace(pivotCache.WorkbookCacheRelId))
+                if (cacheDefinition.MissingItemsLimit?.Value is { } missingItemsLimit)
+                {
+                    pivotCache.ItemsToRetainPerField = missingItemsLimit switch
                     {
-                        pivotCache.WorkbookCacheRelId = workbookPart.GetIdOfPart(pivotTableCacheDefinitionPart);
-                    }
+                        0 => XLItemsToRetain.None,
+                        XLHelper.MaxRowNumber => XLItemsToRetain.Max,
+                        _ => XLItemsToRetain.Automatic,
+                    };
+                }
 
-                    var cacheDefinition = pivotTableCacheDefinitionPart.PivotCacheDefinition;
-                    if (cacheDefinition.MissingItemsLimit is not null)
+                if (cacheDefinition.CacheFields is { } cacheFields)
+                {
+                    ReadCacheFields(cacheFields, pivotCache);
+                    if (pivotTableCacheDefinitionPart.PivotTableCacheRecordsPart?.PivotCacheRecords is { } recordsPart)
                     {
-                        if (cacheDefinition.MissingItemsLimit == 0U)
-                        {
-                            pivotCache.ItemsToRetainPerField = XLItemsToRetain.None;
-                        }
-                        else if (cacheDefinition.MissingItemsLimit == XLHelper.MaxRowNumber)
-                        {
-                            pivotCache.ItemsToRetainPerField = XLItemsToRetain.Max;
-                        }
-                    }
-
-                    if (pivotTableCacheDefinitionPart.PivotCacheDefinition?.CacheFields is { } cacheFields)
-                    {
-                        ReadCacheFields(cacheFields, pivotCache);
-                        if (pivotTableCacheDefinitionPart.PivotTableCacheRecordsPart?.PivotCacheRecords is { } recordsPart)
-                        {
-                            ReadRecords(recordsPart, pivotCache);
-                        }
-                    }
-
-                    if (pivotTableCacheDefinitionPart.PivotCacheDefinition.SaveData != null)
-                    {
-                        pivotCache.SaveSourceData = pivotTableCacheDefinitionPart.PivotCacheDefinition.SaveData.Value;
+                        ReadRecords(recordsPart, pivotCache);
                     }
                 }
+
+                pivotCache.SaveSourceData = cacheDefinition.SaveData?.Value ?? true;
             }
         }
 
-        internal static XLPivotSourceReference ParsePivotSourceReference(PivotTableCacheDefinitionPart pivotTableCacheDefinitionPart)
+        internal static IXLPivotSource ParsePivotSourceReference(CacheSource cacheSource)
         {
-            // TODO: Implement other sources besides worksheetSource
-            // But for now assume names and references point directly to a range
-            var wss = pivotTableCacheDefinitionPart.PivotCacheDefinition.CacheSource.WorksheetSource;
+            // Cache source has several types. Each has a specific required format. Do not use different
+            // combinations, Excel will crash or at least try to repair
+            // [worksheet] uses a worksheet source:
+            //   * An unnamed range in a sheet: Uses `sheet` and `ref`.
+            //   * An table: Uses `name` that contains a name of the table.
+            // [external]
+            //   * `connectionId` link to external relationships.
+            // [consolidation]
+            //  * uses consolidation tag and a list of range sets plus optionally
+            //    page fields to add a custom report fields that allow user to select
+            //    ranges from rangeSet to calculate values.
+            // [scenario]
+            //  * only type attribute tag is specified, no other value. Likely linked
+            //    through cacheField names (e.g. <cacheField name="$A$1 by">).
 
-            if (!String.IsNullOrEmpty(wss.Id))
+            // Not all sources are supported, but at least pipe the data through so the load/save works
+            IEnumValue sourceType = cacheSource.Type?.Value ?? throw PartStructureException.MissingAttribute();
+            if (sourceType.Equals(SourceValues.Worksheet))
             {
-                var externalRelationship = pivotTableCacheDefinitionPart.ExternalRelationships.FirstOrDefault(er => er.Id.Equals(wss.Id));
-                if (externalRelationship?.IsExternal ?? false)
+                var sheetSource = cacheSource.WorksheetSource;
+                if (sheetSource is null)
+                    throw PartStructureException.ExpectedElementNotFound("'worksheetSource' element is required for type 'worksheet'.");
+
+                // If the source is a defined name, it must be a single area reference
+                if (sheetSource.Name?.Value is { } tableOrName)
                 {
-                    // We don't support external sources
-                    return null;
+                    if (sheetSource.Id?.Value is { } externalWorkbookRelId)
+                        return new XLPivotSourceExternalWorkbook(externalWorkbookRelId, tableOrName);
+
+                    return new XLPivotSourceReference(tableOrName);
                 }
+
+                if (sheetSource.Sheet?.Value is { } sheetName &&
+                    sheetSource.Reference?.Value is { } areaRef &&
+                    XLSheetRange.TryParse(areaRef.AsSpan(), out var sheetArea))
+                {
+                    var area = new XLBookArea(sheetName, sheetArea);
+                    if (sheetSource.Id?.Value is { } externalWorkbookRelId)
+                        return new XLPivotSourceExternalWorkbook(externalWorkbookRelId, area);
+
+                    // area is in this workbook
+                    return new XLPivotSourceReference(area);
+                }
+
+                throw PartStructureException.IncorrectElementFormat("worksheetSource");
             }
 
-            // Source data of pivot cache are from a table or a named range.
-            if (wss.Name is not null)
+            if (sourceType.Equals(SourceValues.External))
             {
-                return new XLPivotSourceReference(wss.Name);
+                if (cacheSource.ConnectionId?.Value is not { } connectionId)
+                    throw PartStructureException.MissingAttribute("connectionId");
+
+                return new XLPivotSourceConnection(connectionId);
             }
 
-            // Source data of pivot cache are from an area of a workbook.
-            if (wss.Reference is not null && wss.Sheet is not null)
+            if (sourceType.Equals(SourceValues.Consolidation))
             {
-                var bookArea = new XLBookArea(wss.Sheet, XLSheetRange.Parse(wss.Reference));
-                return new XLPivotSourceReference(bookArea);
+                if (cacheSource.Consolidation is not { } consolidation)
+                    throw PartStructureException.ExpectedElementNotFound("consolidation");
+
+                var autoPage = consolidation.AutoPage?.Value ?? true;
+                var xlPages = new List<XLPivotCacheSourceConsolidationPage>();
+                if (consolidation.Pages is { } pages)
+                {
+                    // There is 1..4 pages
+                    foreach (var page in pages.Cast<Page>())
+                    {
+                        var xlPageItems = new List<string>();
+                        foreach (var pageItem in page.Cast<PageItem>())
+                        {
+                            var pageItemName = pageItem.Name?.Value ?? throw PartStructureException.MissingAttribute();
+                            xlPageItems.Add(pageItemName);
+                        }
+
+                        xlPages.Add(new XLPivotCacheSourceConsolidationPage(xlPageItems));
+                    }
+                }
+
+                if (consolidation.RangeSets is not { } rangeSets)
+                    throw PartStructureException.RequiredElementIsMissing();
+
+                var xlRangeSets = new List<XLPivotCacheSourceConsolidationRangeSet>();
+                foreach (var rangeSet in rangeSets.Cast<RangeSet>())
+                    xlRangeSets.Add(GetRangeSet(rangeSet, xlPages));
+
+                if (xlRangeSets.Count < 1)
+                    throw PartStructureException.IncorrectElementsCount();
+
+                return new XLPivotSourceConsolidation
+                {
+                    AutoPage = autoPage,
+                    Pages = xlPages,
+                    RangeSets = xlRangeSets
+                };
             }
 
-            throw PartStructureException.MissingAttribute();
+            if (sourceType.Equals(SourceValues.Scenario))
+            {
+                return new XLPivotSourceScenario();
+            }
+
+            throw PartStructureException.InvalidAttributeValue(sourceType.Value);
+
+            static XLPivotCacheSourceConsolidationRangeSet GetRangeSet(RangeSet rangeSet, List<XLPivotCacheSourceConsolidationPage> xlPages)
+            {
+                var pageIndexes = new[]
+                {
+                    rangeSet.FieldItemIndexPage1?.Value,
+                    rangeSet.FieldItemIndexPage2?.Value,
+                    rangeSet.FieldItemIndexPage3?.Value,
+                    rangeSet.FieldItemIndexPage4?.Value,
+                };
+
+                // Validate that supplied indexes reference existing page and page items
+                for (var i = 0; i < pageIndexes.Length; ++i)
+                {
+                    var pageIndex = pageIndexes[i];
+
+                    // If there is a page and rangeSet doesn't define index to the page, it is displayed as blank
+                    if (pageIndex is null)
+                        continue;
+
+                    // Range set points to a non-existent page filter
+                    if (i >= xlPages.Count)
+                        throw PartStructureException.IncorrectAttributeValue();
+
+                    // Range set points to a non-existent item in a page filter
+                    var pageFilter = xlPages[i];
+                    if (pageIndex.Value >= pageFilter.PageItems.Count)
+                        throw PartStructureException.IncorrectAttributeValue();
+                }
+
+                if (rangeSet.Name?.Value is { } tableOrName)
+                {
+                    return new XLPivotCacheSourceConsolidationRangeSet
+                    {
+                        Indexes = pageIndexes,
+                        RelId = rangeSet.Id?.Value,
+                        TableOrName = tableOrName,
+                    };
+                }
+
+                if (rangeSet.Sheet?.Value is { } sheet &&
+                    rangeSet.Reference?.Value is { } reference &&
+                    XLSheetRange.TryParse(reference.AsSpan(), out var area))
+                {
+                    return new XLPivotCacheSourceConsolidationRangeSet
+                    {
+                        Indexes = pageIndexes,
+                        RelId = rangeSet.Id?.Value,
+                        Area = new XLBookArea(sheet, area)
+                    };
+                }
+
+                throw PartStructureException.IncorrectElementFormat("rangeSet");
+            }
         }
 
         private static void ReadCacheFields(CacheFields cacheFields, XLPivotCache pivotCache)

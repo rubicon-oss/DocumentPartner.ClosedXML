@@ -13,6 +13,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ClosedXML.Graphics;
 using ClosedXML.Parser;
+using ClosedXML.Excel.CalcEngine.Visitors;
 
 namespace ClosedXML.Excel
 {
@@ -99,7 +100,7 @@ namespace ClosedXML.Excel
             private protected set => _cellsCollection.StyleSlice.Set(_rowNumber, _columnNumber, value);
         }
 
-        internal int SharedStringId => _cellsCollection.ValueSlice.GetShareStringId(SheetPoint);
+        internal int MemorySstId => _cellsCollection.ValueSlice.GetShareStringId(SheetPoint);
 
         internal XLImmutableRichText RichText => SliceRichText;
 
@@ -736,10 +737,17 @@ namespace ClosedXML.Excel
                 if (IsInferiorMergedCell())
                     return;
 
-                value = value?.TrimFormulaEqual();
-                Formula = !String.IsNullOrWhiteSpace(value)
-                    ? XLCellFormula.NormalA1(value)
-                    : null;
+                var formula = value?.TrimFormulaEqual();
+                if (!String.IsNullOrWhiteSpace(formula))
+                {
+                    var fixedFunctionsFormula = FormulaTransformation.FixFutureFunctions(formula, Worksheet.Name, SheetPoint);
+                    Formula = XLCellFormula.NormalA1(fixedFunctionsFormula);
+                }
+                else
+                {
+                    Formula = null;
+                }
+
                 InvalidateFormula();
             }
         }
@@ -753,10 +761,18 @@ namespace ClosedXML.Excel
                 if (IsInferiorMergedCell())
                     return;
 
-                value = value?.TrimFormulaEqual();
-                Formula = !String.IsNullOrWhiteSpace(value)
-                    ? XLCellFormula.NormalA1(FormulaConverter.ToA1(value, _rowNumber, _columnNumber))
-                    : null;
+                var formula = value?.TrimFormulaEqual();
+                if (!String.IsNullOrWhiteSpace(formula))
+                {
+                    var formulaA1 = FormulaConverter.ToA1(formula, _rowNumber, _columnNumber);
+                    var fixedFunctionsFormulaA1 = FormulaTransformation.FixFutureFunctions(formulaA1, Worksheet.Name, SheetPoint);
+                    Formula = XLCellFormula.NormalA1(fixedFunctionsFormulaA1);
+                }
+                else
+                {
+                    Formula = null;
+                }
+
                 InvalidateFormula();
             }
         }
@@ -1337,7 +1353,7 @@ namespace ClosedXML.Excel
             FormulaR1C1 = source.FormulaR1C1;
             SliceComment = source.SliceComment == null ? null : new XLComment(this, source.SliceComment, source.Style.Font, source.SliceComment.Style);
 
-            if (Worksheet.Hyperlinks.TryGet(source.SheetPoint, out var sourceHyperlink))
+            if (source.Worksheet.Hyperlinks.TryGet(source.SheetPoint, out var sourceHyperlink))
             {
                 SetCellHyperlink(new XLHyperlink(sourceHyperlink));
             }
