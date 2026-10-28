@@ -2,7 +2,7 @@ name: Upstream Sync (ClosedXML Release -> PR)
 
 on:
   schedule:
-    - cron: '17 */6 * * *' # every 6 hours
+    - cron: '57 * * * *'
   workflow_dispatch:
     inputs:
       release_tag:
