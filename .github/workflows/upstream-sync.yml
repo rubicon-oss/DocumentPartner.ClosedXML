@@ -13,7 +13,6 @@ on:
 permissions:
   contents: write
   pull-requests: write
-  issues: write
   actions: write
 
 concurrency:
@@ -27,7 +26,7 @@ jobs:
 
     env:
       TARGET_REPO: rubicon-oss/DocumentPartner.ClosedXML
-      TARGET_BRANCH: documentpartner/main
+      TARGET_BRANCH: main
       UPSTREAM_REPO: ClosedXML/ClosedXML
       CI_WORKFLOW_FILE: ci.yml
 
@@ -37,6 +36,9 @@ jobs:
         with:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
+          # GITHUB_TOKEN can't push commits that change .github/workflows (e.g. upstream's build.yml since 0.105.1).
+          # UPSTREAM_SYNC_TOKEN: fine-grained PAT with Contents and Workflows read/write on this repository.
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
 
       - name: Configure git
         run: |
@@ -124,75 +126,69 @@ jobs:
         if: steps.resolve.outputs.found != 'true'
         run: echo "Nothing to sync."
 
-      - name: Create/update integration branch
+      - name: Create integration branch
+        id: branch
         if: steps.resolve.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.resolve.outputs.branch }}"
           TAG="${{ steps.resolve.outputs.tag }}"
+
+          # An open PR may already contain a manual conflict resolution, never overwrite its branch.
+          PR_URL=$(gh pr list --repo "${TARGET_REPO}" --head "$BRANCH" --base "${TARGET_BRANCH}" --state open --json url -q '.[0].url')
+          if [ -n "${PR_URL:-}" ] && [ "${PR_URL}" != "null" ]; then
+            echo "Open PR already exists: ${PR_URL}"
+            echo "pr_exists=true" >> "$GITHUB_OUTPUT"
+            echo "pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_exists=false" >> "$GITHUB_OUTPUT"
 
           git checkout -B "$BRANCH" "origin/${TARGET_BRANCH}"
 
-          # Keep branch deterministic per run.
-          # Remove prior merge attempt on branch by resetting to target branch first.
-          git reset --hard "origin/${TARGET_BRANCH}"
-
-          # Attempt merge of upstream tag commit.
-          if ! git merge --no-ff --no-edit "upstream-${TAG}"; then
-            echo "merge_conflict=true" >> "$GITHUB_ENV"
-            echo "merge_conflict_files<<EOF" >> "$GITHUB_ENV"
-            git diff --name-only --diff-filter=U >> "$GITHUB_ENV"
-            echo "EOF" >> "$GITHUB_ENV"
-
-            # Abort conflicted merge so branch remains clean if needed.
-            git merge --abort || true
+          if git merge --no-ff --no-edit "upstream-${TAG}"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
           else
-            echo "merge_conflict=false" >> "$GITHUB_ENV"
-            git push --force-with-lease origin "$BRANCH"
+            {
+              echo "conflict_files<<EOF"
+              git diff --name-only --diff-filter=U
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+
+            # The branch is the upstream release as-is, the PR shows the conflicts with the target branch.
+            git checkout -B "$BRANCH" "upstream-${TAG}"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open or update conflict issue
-        if: steps.resolve.outputs.found == 'true' && env.merge_conflict == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          TITLE="Upstream sync conflict: ${{ steps.resolve.outputs.tag }}"
-          BODY=$(cat <<EOF
-          Upstream sync for \`${{ steps.resolve.outputs.tag }}\` could not be merged automatically into \`${TARGET_BRANCH}\`.
+          git push --force origin "$BRANCH"
 
-          Upstream release: ${{ steps.resolve.outputs.release_url }}
-          Upstream commit: \`${{ steps.resolve.outputs.commit }}\`
-
-          Conflicting files:
-          \`\`\`
-          ${merge_conflict_files}
-          \`\`\`
-
-          Please resolve manually by creating/updating branch \`${{ steps.resolve.outputs.branch }}\`, then open a PR to \`${TARGET_BRANCH}\`.
-          EOF
-          )
-
-          ISSUE_NUMBER=$(gh issue list --repo "${TARGET_REPO}" --state open --search "in:title ${TITLE}" --json number -q '.[0].number')
-          if [ -n "${ISSUE_NUMBER:-}" ] && [ "${ISSUE_NUMBER}" != "null" ]; then
-            gh issue comment "${ISSUE_NUMBER}" --repo "${TARGET_REPO}" --body "$BODY"
-          else
-            gh issue create --repo "${TARGET_REPO}" --title "$TITLE" --body "$BODY"
-          fi
-
-      - name: Create or update PR
-        if: steps.resolve.outputs.found == 'true' && env.merge_conflict == 'false'
+      - name: Create PR
         id: pr
+        if: steps.resolve.outputs.found == 'true' && steps.branch.outputs.pr_exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          CONFLICT: ${{ steps.branch.outputs.conflict }}
+          CONFLICT_FILES: ${{ steps.branch.outputs.conflict_files }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.resolve.outputs.branch }}"
           TAG="${{ steps.resolve.outputs.tag }}"
 
-          TITLE="chore: sync upstream release ${TAG}"
+          if [ "$CONFLICT" = "true" ]; then
+            TITLE="chore: sync upstream release ${TAG} (conflicts)"
+            STATUS="The merge of \`${TAG}\` into \`${TARGET_BRANCH}\` has conflicts. The branch contains the upstream release as-is, resolve the conflicts as described in the comment below."
+          else
+            TITLE="chore: sync upstream release ${TAG}"
+            STATUS="\`${TAG}\` was merged into \`${TARGET_BRANCH}\` without conflicts."
+          fi
+
           BODY=$(cat <<EOF
           Automated upstream sync PR.
+
+          ${STATUS}
 
           - Upstream repo: \`${UPSTREAM_REPO}\`
           - Upstream release: ${{ steps.resolve.outputs.release_url }}
@@ -202,23 +198,89 @@ jobs:
 
           Notes:
           - Merge strategy is regular merge commit (no squash/rebase).
-          - CI is explicitly dispatched for this branch.
           - Version remains sourced from \`Directory.Build.props\`.
           EOF
           )
 
-          PR_URL=$(gh pr list --repo "${TARGET_REPO}" --head "$BRANCH" --base "${TARGET_BRANCH}" --state open --json url -q '.[0].url')
+          PR_URL=$(gh pr create --repo "${TARGET_REPO}" --base "${TARGET_BRANCH}" --head "$BRANCH" --title "$TITLE" --body "$BODY")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${PR_URL:-}" ] && [ "${PR_URL}" != "null" ]; then
-            gh pr edit "$PR_URL" --repo "${TARGET_REPO}" --title "$TITLE" --body "$BODY"
-            echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          if [ "$CONFLICT" = "true" ]; then
+            COMMENT=$(cat <<EOF
+          ## How to integrate this release
+
+          Conflicting files:
+          \`\`\`
+          ${CONFLICT_FILES}
+          \`\`\`
+
+          1. Merge the target branch into this branch:
+             \`\`\`bash
+             git fetch origin
+             git checkout -B ${BRANCH} origin/${BRANCH}
+             git merge --no-ff origin/${TARGET_BRANCH}
+             \`\`\`
+          2. Resolve the conflicts, then check that nothing is left:
+             \`\`\`bash
+             git status
+             git diff --check
+             \`\`\`
+          3. Commit the resolution:
+             \`\`\`bash
+             git add -A
+             git commit --no-edit
+             \`\`\`
+          4. Build and test:
+             \`\`\`bash
+             dotnet build ClosedXML.sln -c Release
+             dotnet test ClosedXML.sln -c Release --no-build
+             \`\`\`
+          5. Push. CI runs on the push:
+             \`\`\`bash
+             git push origin ${BRANCH}
+             \`\`\`
+          6. When CI is green, merge this PR with **Create a merge commit** (no squash, no rebase).
+          7. Delete the local branch:
+             \`\`\`bash
+             git checkout ${TARGET_BRANCH}
+             git pull
+             git branch -D ${BRANCH}
+             \`\`\`
+
+          The workflow doesn't touch this branch while this PR is open.
+          EOF
+            )
           else
-            PR_URL=$(gh pr create --repo "${TARGET_REPO}" --base "${TARGET_BRANCH}" --head "$BRANCH" --title "$TITLE" --body "$BODY")
-            echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+            COMMENT=$(cat <<EOF
+          ## How to integrate this release
+
+          The merge has no conflicts, CI was dispatched for this branch.
+
+          1. Optionally check the merge locally:
+             \`\`\`bash
+             git fetch origin
+             git checkout -B ${BRANCH} origin/${BRANCH}
+             dotnet build ClosedXML.sln -c Release
+             dotnet test ClosedXML.sln -c Release --no-build
+             \`\`\`
+          2. When CI is green, merge this PR with **Create a merge commit** (no squash, no rebase).
+          3. Delete the local branch, if you checked it out:
+             \`\`\`bash
+             git checkout ${TARGET_BRANCH}
+             git pull
+             git branch -D ${BRANCH}
+             \`\`\`
+
+          The workflow doesn't touch this branch while this PR is open.
+          EOF
+            )
           fi
 
+          gh pr comment "$PR_URL" --repo "${TARGET_REPO}" --body "$COMMENT"
+
       - name: Dispatch CI workflow for integration branch
-        if: steps.resolve.outputs.found == 'true' && env.merge_conflict == 'false'
+        # A branch with conflicts is the plain upstream release without the CI workflow of the fork.
+        if: steps.resolve.outputs.found == 'true' && steps.branch.outputs.pr_exists == 'false' && steps.branch.outputs.conflict == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -236,8 +298,10 @@ jobs:
               echo "- Tag: ${{ steps.resolve.outputs.tag }}"
               echo "- Commit: ${{ steps.resolve.outputs.commit }}"
               echo "- Branch: ${{ steps.resolve.outputs.branch }}"
-              echo "- Merge conflict: ${merge_conflict:-unknown}"
-              if [ "${merge_conflict:-}" = "false" ]; then
+              if [ "${{ steps.branch.outputs.pr_exists }}" = "true" ]; then
+                echo "- PR already open, branch left untouched: ${{ steps.branch.outputs.pr_url }}"
+              else
+                echo "- Merge conflict: ${{ steps.branch.outputs.conflict }}"
                 echo "- PR: ${{ steps.pr.outputs.pr_url }}"
               fi
             fi
