@@ -845,28 +845,61 @@ namespace ClosedXML.Excel
         private void LoadTextBox<T>(IXLDrawing<T> xlDrawing, XElement textBox)
         {
             var attStyle = textBox.Attribute("style");
-            if (attStyle != null) LoadTextBoxStyle<T>(xlDrawing, attStyle);
+            if (attStyle != null) LoadTextBoxStyle(xlDrawing, attStyle);
 
             var attInset = textBox.Attribute("inset");
-            if (attInset != null) LoadTextBoxInset<T>(xlDrawing, attInset);
+            if (attInset != null) LoadTextBoxInset(xlDrawing, attInset);
         }
 
         private void LoadTextBoxInset<T>(IXLDrawing<T> xlDrawing, XAttribute attInset)
         {
             var split = attInset.Value.Split(',');
-            xlDrawing.Style.Margins.Left = GetInsetValue(split[0]);
-            xlDrawing.Style.Margins.Top = GetInsetValue(split[1]);
-            xlDrawing.Style.Margins.Right = GetInsetValue(split[2]);
-            xlDrawing.Style.Margins.Bottom = GetInsetValue(split[3]);
+            xlDrawing.Style.Margins.Left = GetInsetInInches(split[0], DpiX);
+            xlDrawing.Style.Margins.Top = GetInsetInInches(split[1], DpiY);
+            xlDrawing.Style.Margins.Right = GetInsetInInches(split[2], DpiX);
+            xlDrawing.Style.Margins.Bottom = GetInsetInInches(split[3], DpiY);
         }
 
-        private double GetInsetValue(string value)
+        /// <summary>
+        /// List of all VML length units and their conversion. Key is a name, value is a conversion
+        /// function to EMU. See <a href="https://learn.microsoft.com/en-us/windows/win32/vml/msdn-online-vml-units">documentation</a>.
+        /// </summary>
+        /// <remarks>
+        /// OI-29500 says <em>Office also uses EMUs throughout VML as a valid unit system</em>.
+        /// Relative units conversions are guesstimated by how Excel 2022 behaves for inset
+        /// attribute of <c>TextBox</c> element of a note/comment. Generally speaking, Excel
+        /// converts relative values to physical length (e.g. <c>px</c> to <c>pt</c>) and saves
+        /// them as such. The <c>ex</c>/<c>em</c> units are not interpreted as described in the
+        /// doc, but as 1/90th or an inch. The <c>%</c> seems to be always 0.
+        /// </remarks>
+        private static readonly Dictionary<string, Func<double, double, Emu?>> VmlLengthUnits = new()
         {
-            String v = value.Trim();
-            if (v.EndsWith("pt"))
-                return Double.Parse(v.Substring(0, v.Length - 2), CultureInfo.InvariantCulture) / 72.0;
-            else
-                return Double.Parse(v.Substring(0, v.Length - 2), CultureInfo.InvariantCulture);
+            {"in", (value, _) => Emu.From(value, AbsLengthUnit.Inch) },
+            {"cm", (value, _) => Emu.From(value, AbsLengthUnit.Centimeter) },
+            {"mm", (value, _) => Emu.From(value, AbsLengthUnit.Millimeter) },
+            {"pt", (value, _) => Emu.From(value, AbsLengthUnit.Point) },
+            {"pc", (value, _) => Emu.From(value, AbsLengthUnit.Pica) },
+            {"emu", (value, _) => Emu.From(value , AbsLengthUnit.Emu) },
+            {"px", (value, dpi) => Emu.From(value / dpi, AbsLengthUnit.Inch) },
+            {"em", (value, _) => Emu.From(value * 72.0 / 90.0, AbsLengthUnit.Point) },
+            {"ex", (value, _) => Emu.From(value * 72.0 / 90.0, AbsLengthUnit.Point) },
+            {"%", (_, _) => Emu.ZeroPt },
+        };
+
+        private static double GetInsetInInches(string value, double dpi)
+        {
+            var unit = value.Trim();
+            foreach (var (unitName, conversion) in VmlLengthUnits)
+            {
+                if (unit.EndsWith(unitName) && Double.TryParse(unit[..^unitName.Length], NumberStyles.Float, CultureInfo.InvariantCulture, out var unitValue))
+                {
+                    var insetEmu = conversion(unitValue, dpi) ?? Emu.ZeroPt;
+                    return insetEmu.To(AbsLengthUnit.Inch);
+                }
+            }
+
+            // Excel treats no/unexpected unit as 0
+            return 0;
         }
 
         private static void LoadTextBoxStyle<T>(IXLDrawing<T> xlDrawing, XAttribute attStyle)

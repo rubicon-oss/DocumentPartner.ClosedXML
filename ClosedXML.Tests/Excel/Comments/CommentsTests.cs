@@ -2,6 +2,7 @@
 using DocumentFormat.OpenXml.Packaging;
 using NUnit.Framework;
 using System;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 
@@ -169,6 +170,33 @@ namespace ClosedXML.Tests.Excel.Comments
                 Assert.True(ws.Cell("A1").GetComment().Visible);
                 Assert.False(ws.Cell("A4").GetComment().Visible);
             }
+        }
+
+        [Test]
+        public void Margins_are_converted_to_physical_length()
+        {
+            // Technically, it's insets on a textbox. Each comment uses a different unit, but all
+            // should have same final dimension at left and top margin (easily visible in the
+            // sheet). Tested units: in, cm, mm, pt, pc, emu, px, em, ex. Pixels are converted
+            // through supplied DPI.
+            // The last comment in vmlDrawing1 also has invalid units and number. These are
+            // converted to 0, so we don't crash on load (Excel also ignores invalid values).
+            var commentCells = new[] { "A1", "A7", "A16", "A22", "A28" };
+            TestHelper.LoadAndAssert((_, ws) =>
+            {
+                foreach (var commentCell in commentCells)
+                {
+                    var cell = ws.Cell(commentCell);
+                    Assert.True(cell.HasComment);
+                    var margins = cell.GetComment().Style.Margins;
+
+                    Assert.AreEqual(0.5, margins.Left);
+                    Assert.AreEqual(0.75, margins.Top);
+
+                    Assert.AreEqual(0, margins.Right);
+                    Assert.AreEqual(0, margins.Bottom);
+                }
+            }, @"Other\Comments\InsetsUnitConversion.xlsx", new LoadOptions { Dpi = new Point(120, 120) });
         }
     }
 }

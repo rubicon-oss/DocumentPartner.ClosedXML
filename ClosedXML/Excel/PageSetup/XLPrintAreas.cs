@@ -67,7 +67,7 @@ namespace ClosedXML.Excel
         {
             if (!string.IsNullOrWhiteSpace(PrintArea))
             {
-                PrintArea = FormulaConverter.ModifyA1(PrintArea, 1, 1, new RenameRefModVisitor
+                PrintArea = FormulaConverter.ModifyA1(PrintArea, string.Empty, 1, 1, new RenameRefModVisitor
                 {
                     Sheets = new Dictionary<string, string> { { oldSheetName, newSheetName } }
                 });

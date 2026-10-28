@@ -19,6 +19,21 @@ namespace ClosedXML.Excel
         public const String MaxColumnLetter = "XFD";
         public const Double Epsilon = 1e-10;
 
+        /// <summary>
+        /// Maximum number of code units that can be stored in a cell.
+        /// </summary>
+        internal const int CellTextLimit = 32767;
+
+        /// <summary>
+        /// 1900 calendar serial date upper limit (exclusive).
+        /// </summary>
+        internal const int Calendar1900UpperLimit = 2958466;
+
+        /// <summary>
+        /// 1904 calendar serial date upper limit (exclusive).
+        /// </summary>
+        internal const int Calendar1904UpperLimit = 2957004;
+
         public static Encoding NoBomUTF8 = new UTF8Encoding(false);
 
         public static String LastCell { get { return $"{MaxColumnLetter}{MaxRowNumber}"; } }
