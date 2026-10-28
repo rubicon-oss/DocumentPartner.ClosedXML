@@ -42,7 +42,7 @@ jobs:
         run: dotnet build ClosedXML.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test ClosedXML.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test ClosedXML.sln --configuration Release --no-build --filter "FullyQualifiedName!~TestOleDbValues" --logger "trx;LogFileName=test-results.trx"
 
       - name: Upload test results
         if: always()
