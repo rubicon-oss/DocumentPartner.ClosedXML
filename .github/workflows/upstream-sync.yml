@@ -164,20 +164,23 @@ jobs:
           fi
           echo "conflict=${CONFLICT}" >> "$GITHUB_OUTPUT"
 
-          # Upstream workflows aren't used by the fork: remove every workflow that doesn't exist on the target branch.
-          # The upstream history still contains them, so pushing needs a token with workflows permission anyway.
-          UPSTREAM_WORKFLOWS=$(comm -23 \
-            <(git ls-tree --name-only HEAD .github/workflows/ | sort) \
-            <(git ls-tree --name-only "origin/${TARGET_BRANCH}" .github/workflows/ | sort))
-          if [ -n "$UPSTREAM_WORKFLOWS" ]; then
-            echo "Removing upstream workflows:"
-            echo "$UPSTREAM_WORKFLOWS"
-            echo "$UPSTREAM_WORKFLOWS" | xargs git rm -q --
+          # Upstream CI isn't used by the fork: remove every workflow that doesn't exist on the target branch and appveyor.yml.
+          # The upstream history still contains the workflows, so pushing needs a token with workflows permission anyway.
+          UPSTREAM_CI=$( {
+            comm -23 \
+              <(git ls-tree --name-only HEAD .github/workflows/ | sort) \
+              <(git ls-tree --name-only "origin/${TARGET_BRANCH}" .github/workflows/ | sort)
+            git ls-tree --name-only HEAD appveyor.yml
+          } )
+          if [ -n "$UPSTREAM_CI" ]; then
+            echo "Removing upstream CI files:"
+            echo "$UPSTREAM_CI"
+            echo "$UPSTREAM_CI" | xargs git rm -q --
             if [ "$CONFLICT" = "false" ]; then
-              # Keep a single merge commit, so the workflows never reach the target branch.
+              # Keep a single merge commit, so the files never reach the target branch.
               git commit -q --amend --no-edit
             else
-              git commit -q -m "Remove upstream workflows"
+              git commit -q -m "Remove upstream CI files"
             fi
           fi
 
@@ -238,7 +241,11 @@ jobs:
              git checkout -B ${BRANCH} origin/${BRANCH}
              git merge --no-ff origin/${TARGET_BRANCH}
              \`\`\`
-          2. Resolve the conflicts, then check that nothing is left:
+          2. Resolve the conflicts. Upstream CI files stay removed, the merge brings back the fork's \`appveyor.yml\`:
+             \`\`\`bash
+             git rm -q --ignore-unmatch appveyor.yml
+             \`\`\`
+             Then check that nothing is left:
              \`\`\`bash
              git status
              git diff --check
