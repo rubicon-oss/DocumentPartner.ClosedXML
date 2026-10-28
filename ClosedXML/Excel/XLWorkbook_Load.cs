@@ -106,6 +106,8 @@ namespace ClosedXML.Excel
             }
 
             LoadWorkbookTheme(workbookPart?.ThemePart, this);
+            if (EnableXmlMaps)
+                LoadXmlMaps(workbookPart);
 
             if (dSpreadsheet.CustomFilePropertiesPart != null)
             {
@@ -376,6 +378,8 @@ namespace ClosedXML.Excel
 
                     var xlTable = ws.Range(reference).CreateTable(tableName, false) as XLTable;
                     xlTable.RelId = relId;
+                    if (EnableXmlMaps)
+                        LoadXmlMapTable(xlTable, dTable);
 
                     if (dTable.HeaderRowCount != null && dTable.HeaderRowCount == 0)
                     {
@@ -447,6 +451,9 @@ namespace ClosedXML.Excel
                 }
 
                 #endregion LoadTables
+
+                if (EnableXmlMaps)
+                    LoadXmlMapCells(worksheetPart, ws);
 
                 LoadDrawings(worksheetPart, ws);
 

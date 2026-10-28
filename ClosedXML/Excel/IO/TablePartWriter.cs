@@ -161,6 +161,8 @@ namespace ClosedXML.Excel.IO
             table.AppendChild(tableColumns);
             table.AppendChild(tableStyleInfo1);
 
+            if (XLWorkbook.EnableXmlMaps)
+                XmlMapWriter.ApplyTableBinding(tableDefinitionPart, table, xlTable);
             tableDefinitionPart.Table = table;
         }
 

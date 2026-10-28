@@ -302,6 +302,8 @@ namespace ClosedXML.Excel
                 // set in phase 1. The phase 2 is all about content of individual parts.
                 // Each part should have individual writer.
                 TablePartWriter.GenerateTableParts(xlTables, worksheetPart, context);
+                if (EnableXmlMaps)
+                    XmlMapWriter.WriteCellBindings(worksheetPart, worksheet, context);
 
                 WorksheetPartWriter.GenerateWorksheetPartContent(partIsEmpty, worksheetPart, worksheet, options, context);
 
@@ -310,6 +312,9 @@ namespace ClosedXML.Excel
                     GeneratePivotTables(workbookPart, worksheetPart, worksheet, context);
                 }
             }
+
+            if (EnableXmlMaps)
+                XmlMapWriter.WriteMaps(workbookPart, this, context);
 
             if (options.GenerateCalculationChain)
             {
