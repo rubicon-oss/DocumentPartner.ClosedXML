@@ -15,34 +15,42 @@ namespace ClosedXML.Tests.Excel.Comments
         [TestCase(ThreadedCommentLoading.ConvertToNotes, @"This is a threaded commentThis is a reply.")]
         public void CanReadThreadedCommentNote (ThreadedCommentLoading threadedCommentLoading, string expectedComments)
         {
-            Assert.Multiple (() =>
+            ThreadedCommentsLoadOptions.ThreadedCommentLoading = threadedCommentLoading;
+            try
             {
-                using var stream = TestHelper.GetStreamFromResource (TestHelper.GetResourcePath (@"TryToLoad\ThreadedComment.xlsx"));
-                using var wb = new XLWorkbook (stream, new LoadOptions { ThreadedCommentLoading = threadedCommentLoading });
-                AssertComment (expectedComments, wb);
-
-                using var ms1 = new MemoryStream ();
-                wb.SaveAs (ms1, true);
-
-
-                using var wb2 = new XLWorkbook (ms1);
-                AssertComment (expectedComments, wb2);
-
-                using var ms2 = new MemoryStream ();
-                wb.SaveAs (ms2, true);
-
-                static void AssertComment (string expectedComments, XLWorkbook wb)
+                Assert.Multiple (() =>
                 {
-                    var ws = wb.Worksheets.First ();
-                    var c1 = ws.Cell ("A1");
-                    Assert.AreEqual (expectedComments, c1.GetComment ().Text);
-                    Assert.AreEqual ("tc={49C52447-16DF-491E-8BD1-273F700714C6}", c1.GetComment ().Author);
+                    using var stream = TestHelper.GetStreamFromResource (TestHelper.GetResourcePath (@"TryToLoad\ThreadedComment.xlsx"));
+                    using var wb = new XLWorkbook (stream);
+                        AssertComment (expectedComments, wb);
 
-                    var c2 = ws.Cell ("A2");
-                    Assert.AreEqual ("Author:\r\nA note", c2.GetComment ().Text);
-                    Assert.AreEqual ("tc={49C52447-16DF-491E-8BD1-273F700714C6}", c1.GetComment ().Author);
-                }
-            });
+                    using var ms1 = new MemoryStream ();
+                    wb.SaveAs (ms1, true);
+
+                    ThreadedCommentsLoadOptions.ThreadedCommentLoading = ThreadedCommentLoading.Skip;
+                    using var wb2 = new XLWorkbook (ms1);
+                    AssertComment (expectedComments, wb2);
+
+                    using var ms2 = new MemoryStream ();
+                    wb.SaveAs (ms2, true);
+
+                    static void AssertComment (string expectedComments, XLWorkbook wb)
+                    {
+                        var ws = wb.Worksheets.First ();
+                        var c1 = ws.Cell ("A1");
+                        Assert.AreEqual (expectedComments, c1.GetComment ().Text);
+                        Assert.AreEqual ("tc={49C52447-16DF-491E-8BD1-273F700714C6}", c1.GetComment ().Author);
+
+                        var c2 = ws.Cell ("A2");
+                        Assert.AreEqual ("Author:\r\nA note", c2.GetComment ().Text);
+                        Assert.AreEqual ("tc={49C52447-16DF-491E-8BD1-273F700714C6}", c1.GetComment ().Author);
+                    }
+                });
+            }
+            finally
+            {
+                ThreadedCommentsLoadOptions.ThreadedCommentLoading = ThreadedCommentLoading.Skip;
+            }
         }
 
         [Test]

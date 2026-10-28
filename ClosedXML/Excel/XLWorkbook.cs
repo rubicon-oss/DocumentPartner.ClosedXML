@@ -735,7 +735,7 @@ namespace ClosedXML.Excel
         internal XLWorkbook(String file, Boolean asTemplate)
             : this(new LoadOptions())
         {
-            LoadSheetsFromTemplate(file, new LoadOptions());
+            LoadSheetsFromTemplate(file);
         }
 
         /// <summary>
@@ -753,7 +753,7 @@ namespace ClosedXML.Excel
             _loadSource = XLLoadSource.File;
             _originalFile = file;
             _spreadsheetDocumentType = GetSpreadsheetDocumentType(_originalFile);
-            Load(file, loadOptions);
+            Load(file);
 
             if (loadOptions.RecalculateAllFormulas)
                 this.RecalculateAllFormulas();
@@ -773,7 +773,7 @@ namespace ClosedXML.Excel
         {
             _loadSource = XLLoadSource.Stream;
             _originalStream = stream;
-            Load(stream, loadOptions);
+            Load(stream);
 
             if (loadOptions.RecalculateAllFormulas)
                 this.RecalculateAllFormulas();
@@ -974,6 +974,14 @@ namespace ClosedXML.Excel
         public static XLCellValue EvaluateExpr(String expression)
         {
             return CalcEngineExpr.EvaluateFormula(expression).ToCellValue();
+        }
+
+        /// <summary>
+        /// Evaluate a formula and return a value. Use current culture.
+        /// </summary>
+        internal static XLCellValue EvaluateExprCurrent(String expression)
+        {
+            return new XLCalcEngine(CultureInfo.CurrentCulture).EvaluateFormula(expression).ToCellValue();
         }
 
         public String Author { get; set; }

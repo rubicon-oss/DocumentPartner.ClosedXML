@@ -32,32 +32,32 @@ namespace ClosedXML.Excel
 
     public partial class XLWorkbook
     {
-        private void Load(String file, LoadOptions loadOptions)
+        private void Load(String file)
         {
-            LoadSheets(file, loadOptions);
+            LoadSheets(file);
         }
 
-        private void Load(Stream stream, LoadOptions loadOptions)
+        private void Load(Stream stream)
         {
-            LoadSheets(stream, loadOptions);
+            LoadSheets(stream);
         }
 
-        private void LoadSheets(String fileName, LoadOptions loadOptions)
+        private void LoadSheets(String fileName)
         {
             using (var dSpreadsheet = SpreadsheetDocument.Open(fileName, false))
-                LoadSpreadsheetDocument(dSpreadsheet, loadOptions);
+                LoadSpreadsheetDocument(dSpreadsheet);
         }
 
-        private void LoadSheets(Stream stream, LoadOptions loadOptions)
+        private void LoadSheets(Stream stream)
         {
             using (var dSpreadsheet = SpreadsheetDocument.Open(stream, false))
-                LoadSpreadsheetDocument(dSpreadsheet, loadOptions);
+                LoadSpreadsheetDocument(dSpreadsheet);
         }
 
-        private void LoadSheetsFromTemplate(String fileName, LoadOptions loadOptions)
+        private void LoadSheetsFromTemplate(String fileName)
         {
             using (var dSpreadsheet = SpreadsheetDocument.CreateFromTemplate(fileName))
-                LoadSpreadsheetDocument(dSpreadsheet, loadOptions);
+                LoadSpreadsheetDocument(dSpreadsheet);
 
             // If we load a workbook as a template, we have to treat it as a "new" workbook.
             // The original file will NOT be copied into place before changes are applied
@@ -91,7 +91,7 @@ namespace ClosedXML.Excel
             }
         }
 
-        private void LoadSpreadsheetDocument(SpreadsheetDocument dSpreadsheet, LoadOptions loadOptions)
+        private void LoadSpreadsheetDocument(SpreadsheetDocument dSpreadsheet)
         {
             var context = new LoadContext();
             ShapeIdManager = new XLIdManager();
@@ -454,7 +454,7 @@ namespace ClosedXML.Excel
 
                 // TODO: add new variant to ThreadedCommentLoading to be able to support threaded comments natively.
                 //    Check which elements can be contained in a threaded coment and how comments relate to each other (threads/tree).
-                if (loadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
+                if (ThreadedCommentsLoadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
                 {
                     if (worksheetPart.WorksheetThreadedCommentsParts != null)
                     {
@@ -504,7 +504,7 @@ namespace ClosedXML.Excel
                         int? shapeId = int.TryParse(shapeIdString, out int sid) ? (int?)sid : null;
 
                         XLComment xlComment = null;
-                        if (loadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
+                        if (ThreadedCommentsLoadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
                         {
                             xlComment = cell.GetComment () ?? cell.CreateComment (shapeId);
 
