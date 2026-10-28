@@ -64,7 +64,14 @@ jobs:
             URL=$(gh release view "$TAG" --repo "${UPSTREAM_REPO}" --json url -q .url)
           else
             # Find newest stable (not draft, not prerelease) release whose commit is not yet contained.
-            mapfile -t RELEASE_ROWS < <(gh release list --repo "${UPSTREAM_REPO}" --limit 100 --json tagName,isDraft,isPrerelease,url,publishedAt --jq '.[] | select(.isDraft==false and .isPrerelease==false) | [.tagName,.url] | @tsv')
+            # Not in a process substitution, so a failing gh call fails the step instead of yielding no releases.
+            RELEASES=$(gh release list --repo "${UPSTREAM_REPO}" --limit 100 --json tagName,isDraft,isPrerelease,url --jq '.[] | select(.isDraft==false and .isPrerelease==false) | [.tagName,.url] | @tsv')
+            if [ -z "$RELEASES" ]; then
+              echo "::error::No stable releases returned for ${UPSTREAM_REPO}."
+              exit 1
+            fi
+            mapfile -t RELEASE_ROWS <<< "$RELEASES"
+            echo "Stable upstream releases: ${#RELEASE_ROWS[@]}"
 
             TAG=""
             URL=""
@@ -78,13 +85,17 @@ jobs:
 
               # Resolve upstream tag commit
               if ! COMMIT=$(git rev-parse "upstream-${CANDIDATE_TAG}^{commit}" 2>/dev/null); then
+                echo "skip ${CANDIDATE_TAG}: tag not resolvable"
                 continue
               fi
 
               # If commit already ancestor of target branch, it's integrated.
               if git merge-base --is-ancestor "$COMMIT" "origin/${TARGET_BRANCH}"; then
+                echo "skip ${CANDIDATE_TAG}: already integrated"
                 continue
               fi
+
+              echo "selected ${CANDIDATE_TAG} (${COMMIT})"
 
               TAG="$CANDIDATE_TAG"
               URL="$CANDIDATE_URL"
