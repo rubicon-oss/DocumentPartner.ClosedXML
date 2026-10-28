@@ -149,7 +149,7 @@ jobs:
           git checkout -B "$BRANCH" "origin/${TARGET_BRANCH}"
 
           if git merge --no-ff --no-edit "upstream-${TAG}"; then
-            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            CONFLICT=false
           else
             {
               echo "conflict_files<<EOF"
@@ -160,7 +160,25 @@ jobs:
 
             # The branch is the upstream release as-is, the PR shows the conflicts with the target branch.
             git checkout -B "$BRANCH" "upstream-${TAG}"
-            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            CONFLICT=true
+          fi
+          echo "conflict=${CONFLICT}" >> "$GITHUB_OUTPUT"
+
+          # Upstream workflows aren't used by the fork: remove every workflow that doesn't exist on the target branch.
+          # The upstream history still contains them, so pushing needs a token with workflows permission anyway.
+          UPSTREAM_WORKFLOWS=$(comm -23 \
+            <(git ls-tree --name-only HEAD .github/workflows/ | sort) \
+            <(git ls-tree --name-only "origin/${TARGET_BRANCH}" .github/workflows/ | sort))
+          if [ -n "$UPSTREAM_WORKFLOWS" ]; then
+            echo "Removing upstream workflows:"
+            echo "$UPSTREAM_WORKFLOWS"
+            echo "$UPSTREAM_WORKFLOWS" | xargs git rm -q --
+            if [ "$CONFLICT" = "false" ]; then
+              # Keep a single merge commit, so the workflows never reach the target branch.
+              git commit -q --amend --no-edit
+            else
+              git commit -q -m "Remove upstream workflows"
+            fi
           fi
 
           git push --force origin "$BRANCH"
