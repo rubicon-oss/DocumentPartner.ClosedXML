@@ -17,7 +17,6 @@ using System.Xml.Linq;
 using ClosedXML.Excel.IO;
 using ClosedXML.Parser;
 using Ap = DocumentFormat.OpenXml.ExtendedProperties;
-using Formula = DocumentFormat.OpenXml.Spreadsheet.Formula;
 using Op = DocumentFormat.OpenXml.CustomProperties;
 using X14 = DocumentFormat.OpenXml.Office2010.Excel;
 using Xdr = DocumentFormat.OpenXml.Drawing.Spreadsheet;
@@ -26,6 +25,7 @@ using static ClosedXML.Excel.XLPredefinedFormat.DateTime;
 namespace ClosedXML.Excel
 {
     using Ap;
+    using DocumentFormat.OpenXml.Office2019.Excel.ThreadedComments;
     using Drawings;
     using Op;
     using System.Drawing;
@@ -452,6 +452,31 @@ namespace ClosedXML.Excel
 
                 #region LoadComments
 
+                // TODO: add new variant to ThreadedCommentLoading to be able to support threaded comments natively.
+                //    Check which elements can be contained in a threaded coment and how comments relate to each other (threads/tree).
+                if (ThreadedCommentsLoadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
+                {
+                    if (worksheetPart.WorksheetThreadedCommentsParts != null)
+                    {
+                        foreach (var threadedCommentPart in worksheetPart.WorksheetThreadedCommentsParts)
+                        {
+                            foreach (var threadedComment in threadedCommentPart.RootElement.Elements<ThreadedComment> ())
+                            {
+                                // find cell by reference
+                                var cell = ws.Cell (threadedComment.Ref);
+
+                                // author etc. is handled by the backward-copmatible entries WorksheetCommentsPart
+                                foreach (var threadedCommentText in threadedComment.Elements<ThreadedCommentText> ())
+                                {
+                                    var xlComment = cell.GetComment() ?? cell.CreateComment ();
+
+                                    xlComment.AddText (threadedCommentText.InnerText.FixNewLines ());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (worksheetPart.WorksheetCommentsPart != null)
                 {
                     var root = worksheetPart.WorksheetCommentsPart.Comments;
@@ -477,12 +502,25 @@ namespace ClosedXML.Excel
                             shapeIdString = shapeIdString.Substring(8);
 
                         int? shapeId = int.TryParse(shapeIdString, out int sid) ? (int?)sid : null;
-                        var xlComment = cell.CreateComment(shapeId);
+
+                        XLComment xlComment = null;
+                        if (ThreadedCommentsLoadOptions.ThreadedCommentLoading == ThreadedCommentLoading.ConvertToNotes)
+                        {
+                            xlComment = cell.GetComment () ?? cell.CreateComment (shapeId);
+
+                             if (shapeId != null)
+                                xlComment.ShapeId = shapeId.Value;
+                        }
+                        else
+                        {
+                            xlComment = cell.CreateComment(shapeId);
+                        }
 
                         xlComment.Author = authors[(int)c.AuthorId.Value].InnerText;
                         ShapeIdManager.Add(xlComment.ShapeId);
 
-                        var runs = c.GetFirstChild<CommentText>().Elements<Run>();
+                        var commentText = c.GetFirstChild<CommentText> ();
+                        var runs = commentText.Elements<Run> ();
                         foreach (var run in runs)
                         {
                             var runProperties = run.RunProperties;
@@ -536,6 +574,7 @@ namespace ClosedXML.Excel
                     }
                 }
             }
+
             LoadDefinedNames(workbook);
 
             PivotTableCacheDefinitionPartReader.Load(workbookPart, this);
@@ -1035,24 +1074,18 @@ namespace ClosedXML.Excel
                 var localSheetId = -1;
                 if (definedName.LocalSheetId?.HasValue ?? false) localSheetId = Convert.ToInt32(definedName.LocalSheetId.Value);
 
-                if (name == "_xlnm.Print_Area")
+                if (name == "_xlnm.Print_Area" && !string.IsNullOrWhiteSpace(definedName.Text))
                 {
-                    var fixedNames = validateDefinedNames(definedName.Text.Split(','));
-                    foreach (string area in fixedNames)
+                    if (definedName.LocalSheetId is null)
                     {
-                        if (area.Contains("["))
+                        PageOptions.PrintAreas.AddFormula(definedName.Text);
+                    }
+                    else
+                    {
+                        var ws = WorksheetsInternal.FirstOrDefault<XLWorksheet>(w => w.SheetId == (localSheetId + 1));
+                        if (ws is not null)
                         {
-                            var ws = WorksheetsInternal.FirstOrDefault<XLWorksheet>(w => w.SheetId == (localSheetId + 1));
-                            if (ws != null)
-                            {
-                                ws.PageSetup.PrintAreas.Add(area);
-                            }
-                        }
-                        else
-                        {
-                            ParseReference(area, out String sheetName, out String sheetArea);
-                            if (!(sheetArea.Equals("#REF") || sheetArea.EndsWith("#REF!") || sheetArea.Length == 0 || sheetName.Length == 0))
-                                WorksheetsInternal.Worksheet(sheetName).PageSetup.PrintAreas.Add(sheetArea);
+                            ws.PageSetup.PrintAreas.AddFormula(definedName.Text);
                         }
                     }
                 }
@@ -1079,7 +1112,7 @@ namespace ClosedXML.Excel
             }
         }
 
-        private static Regex definedNameRegex = new Regex(@"\A('?).*\1!.*\z", RegexOptions.Compiled);
+        private static readonly Regex definedNameRegex = new Regex(@"\A('.*'|[^ ]+)!.*\z", RegexOptions.Compiled);
 
         private IEnumerable<String> validateDefinedNames(IEnumerable<String> definedNames)
         {
@@ -1749,9 +1782,11 @@ namespace ClosedXML.Excel
                             case XLFilterOperator.Equal:
                                 xlFilter = XLFilter.CreateCustomPatternFilter(filterValue, true, connector);
                                 break;
+
                             case XLFilterOperator.NotEqual:
                                 xlFilter = XLFilter.CreateCustomPatternFilter(filterValue, false, connector);
                                 break;
+
                             default:
                                 // OOXML allows only string, so do your best to convert back to a properly typed
                                 // variable. It's not perfect, but let's mimic Excel.

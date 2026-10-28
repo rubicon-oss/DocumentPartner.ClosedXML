@@ -10,7 +10,7 @@ namespace ClosedXML.Excel
     /// </summary>
     public class LoadOptions
     {
-        private Point _dpi = new(96, 96);
+        private Point _dpi = new (96, 96);
 
         /// <summary>
         /// A graphics engine that will be used for workbooks without explicitly set engine.
@@ -34,7 +34,7 @@ namespace ClosedXML.Excel
         public Point Dpi
         {
             get => _dpi;
-            set => _dpi = value.X > 0 && value.Y > 0 ? value : throw new ArgumentException("DPI must be positive");
+            set => _dpi = value.X > 0 && value.Y > 0 ? value : throw new ArgumentException ("DPI must be positive");
         }
     }
 }
