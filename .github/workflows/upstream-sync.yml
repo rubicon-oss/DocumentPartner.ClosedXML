@@ -66,8 +66,10 @@ jobs:
             URL=$(gh release view "$TAG" --repo "${UPSTREAM_REPO}" --json url -q .url)
           else
             # Find newest stable (not draft, not prerelease) release whose commit is not yet contained.
+            # Sorted by version, newest first: the search stops at the first integrated release, so older maintenance
+            # releases (e.g. 0.102.3, never merged into upstream's main line) are never proposed.
             # Not in a process substitution, so a failing gh call fails the step instead of yielding no releases.
-            RELEASES=$(gh release list --repo "${UPSTREAM_REPO}" --limit 100 --json tagName,isDraft,isPrerelease --jq '.[] | select(.isDraft==false and .isPrerelease==false) | .tagName')
+            RELEASES=$(gh release list --repo "${UPSTREAM_REPO}" --limit 100 --json tagName,isDraft,isPrerelease --jq '.[] | select(.isDraft==false and .isPrerelease==false) | .tagName' | sort -rV)
             if [ -z "$RELEASES" ]; then
               echo "::error::No stable releases returned for ${UPSTREAM_REPO}."
               exit 1
@@ -92,10 +94,10 @@ jobs:
                 continue
               fi
 
-              # If commit already ancestor of target branch, it's integrated.
+              # If commit already ancestor of target branch, it's integrated and so is everything older that matters.
               if git merge-base --is-ancestor "$COMMIT" "origin/${TARGET_BRANCH}"; then
-                echo "skip ${CANDIDATE_TAG}: already integrated"
-                continue
+                echo "stop at ${CANDIDATE_TAG}: already integrated"
+                break
               fi
 
               echo "selected ${CANDIDATE_TAG} (${COMMIT})"
